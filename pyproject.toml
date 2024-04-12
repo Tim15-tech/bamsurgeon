@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,7 +10,7 @@ requires-python = ">=3.6"
 authors = [
   {name = "Tim Fey", email = "tmfy_mail-studium@yahoo.com"},
 ]
-description = "Bamsurgeon allows to arificially creates SVs, SNVs and INDELs"
+description = "Bamsurgeon allows to artificially creates SVs, SNVs and INDELs"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
 keywords = ["genomic", "NGS", "SV", "SNV", "INDEL", "mutations", "bioinformatics"]
