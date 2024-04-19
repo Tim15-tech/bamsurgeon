@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "bamsurgeon"
-dynamic = ["version"]
+version = "1.4.1"
 dependencies = []
 requires-python = ">=3.6"
 authors = [
-  {name = "Tim Fey", email = "tmfy_mail-studium@yahoo.com"},
+  {name = "Adam D Ewing", email = "adam.ewing@gmail.com"},
 ]
 description = "Bamsurgeon allows to artificially creates SVs, SNVs and INDELs"
 readme = "README.md"
@@ -25,8 +25,15 @@ classifiers = [
   "Natural Language :: English",
 ]
 
+[project.scripts]
+addsv = "bamsurgeon.addsv:main"
+addsnv = "bamsurgeon.addsnv:main"
+addindels = "bamsurgeon.addindel:main"
+
 [project.urls]
 Homepage = "https://github.com/adamewing/bamsurgeon"
 Documentation = "https://github.com/adamewing/bamsurgeon/blob/master/doc/Manual.pdf"
 Repository = "https://github.com/adamewing/bamsurgeon"
 
+[tool.setuptools.packages.find] 
+include = ["bamsurgeon", "test", "test_data"]
