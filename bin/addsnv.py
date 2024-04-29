@@ -4,9 +4,10 @@ import sys
 import pysam
 import argparse
 import random
+import subprocess
 import os
 import bamsurgeon.replace_reads as rr
-from bamsurgeon.aligners import remap_bam, SUPPORTED_ALIGNERS
+import bamsurgeon.aligners as aligners
 import bamsurgeon.mutation as mutation
 import bamsurgeon.makevcf as makevcf
 
@@ -51,8 +52,8 @@ def makemut(args, hc, avoid, alignopts):
 
     if args.seed is not None: random.seed(int(args.seed) + int(hc[0]['start']))
 
-    bamfile = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta)
-    bammate = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta) # use for mates to avoid iterator problems
+    bamfile = pysam.AlignmentFile(args.bamFileName)
+    bammate = pysam.AlignmentFile(args.bamFileName) # use for mates to avoid iterator problems
     reffile = pysam.Fastafile(args.refFasta)
     tmpbams = []
 
@@ -239,9 +240,9 @@ def makemut(args, hc, avoid, alignopts):
     if not hasSNP or args.force:
         outbam_muts.close()
 
-        remap_bam(args.aligner, tmpoutbamname, args.refFasta, alignopts, threads=int(args.alignerthreads), mutid=hapstr, paired=(not args.single), picardjar=args.picardjar)
+        aligners.remap_bam(args.aligner, tmpoutbamname, args.refFasta, alignopts, threads=int(args.alignerthreads), mutid=hapstr, paired=(not args.single), picardjar=args.picardjar, insane=args.insane)
 
-        outbam_muts = pysam.AlignmentFile(tmpoutbamname, reference_filename=args.refFasta)
+        outbam_muts = pysam.AlignmentFile(tmpoutbamname)
         coverwindow = 1
 
         avgincover = get_avg_coverage(bamfile, chrom,min(mutpos_list)-coverwindow,max(mutpos_list)+coverwindow)
@@ -275,9 +276,10 @@ def makemut(args, hc, avoid, alignopts):
 
     return tmpbams
 
-def submain(args):
+def main(args):
     logger.info("starting %s called with args: %s" % (sys.argv[0], ' '.join(sys.argv)))
     bedfile = open(args.varFileName, 'r')
+    reffile = pysam.Fastafile(args.refFasta)
 
     if (args.bamFileName.endswith('.bam') and not os.path.exists(args.bamFileName + '.bai')) or \
         (args.bamFileName.endswith('.cram') and not os.path.exists(args.bamFileName + '.crai')):
@@ -288,6 +290,7 @@ def submain(args):
     if args.alignopts is not None:
         alignopts = dict([o.split(':') for o in args.alignopts.split(',')])
 
+    aligners.checkoptions(args.aligner, alignopts, args.picardjar)
 
     # load readlist to avoid, if specified
     avoid = None
@@ -296,7 +299,7 @@ def submain(args):
 
     # make a temporary file to hold mutated reads
     outbam_mutsfile = "addsnv." + str(uuid4()) + ".muts.bam"
-    bamfile = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta)
+    bamfile = pysam.AlignmentFile(args.bamFileName)
     outbam_muts = pysam.AlignmentFile(outbam_mutsfile, 'wb', template=bamfile)
     outbam_muts.close()
     bamfile.close()
@@ -420,7 +423,7 @@ def submain(args):
             logger.info("tagged reads.")
 
         logger.info("done making mutations, merging mutations into %s --> %s" % (args.bamFileName, args.outBamFile))
-        rr.replace_reads(args.bamFileName, outbam_mutsfile, args.outBamFile, args.refFasta, keepqual=True, seed=args.seed)
+        rr.replace_reads(args.bamFileName, outbam_mutsfile, args.outBamFile, keepqual=True, seed=args.seed)
 
         #cleanup
         os.remove(outbam_mutsfile)
@@ -428,14 +431,14 @@ def submain(args):
     var_basename = '.'.join(os.path.basename(args.varFileName).split('.')[:-1])
     bam_basename = '.'.join(os.path.basename(args.outBamFile).split('.')[:-1])
 
-    vcf_fn = args.vcf + bam_basename + '.addsnv.' + var_basename + '.vcf'
+    vcf_fn = bam_basename + '.addsnv.' + var_basename + '.vcf'
 
     makevcf.write_vcf_snv('addsnv_logs_' + os.path.basename(args.outBamFile), args.refFasta, vcf_fn)
 
     logger.info('vcf output written to ' + vcf_fn)
 
 
-def main():
+def run():
     parser = argparse.ArgumentParser(description='adds SNVs to reads, outputs modified reads as .bam along with mates')
     parser.add_argument('-v', '--varfile', dest='varFileName', required=True, help='Target regions to try and add a SNV, as BED')
     parser.add_argument('-f', '--bamfile', dest='bamFileName', required=True, help='sam/bam file from which to obtain reads')
@@ -448,7 +451,7 @@ def main():
     parser.add_argument('-d', '--coverdiff', dest='coverdiff', default=0.9, help="allow difference in input and output coverage (default=0.9)")
     parser.add_argument('-z', '--haplosize', default=0, help='haplotype size (default = 0)')
     parser.add_argument('-p', '--procs', dest='procs', default=1, help="split into multiple processes (default=1)")
-    parser.add_argument('--picardjar', required=True, help='path to picard.jar, required for most aligners')
+    parser.add_argument('--picardjar', default=None, help='path to picard.jar, required for most aligners')
     parser.add_argument('--mindepth', default=10, help='minimum read depth to make mutation (default = 10)')
     parser.add_argument('--maxdepth', default=2000, help='maximum read depth to make mutation (default = 2000)')
     parser.add_argument('--minmutreads', default=3, help='minimum number of mutated reads to output per site')
@@ -464,18 +467,17 @@ def main():
     parser.add_argument('--tagreads', action='store_true', default=False, help='add BS tag to altered reads')
     parser.add_argument('--skipmerge', action='store_true', default=False, help="final output is tmp file to be merged")
     parser.add_argument('--ignorepileup', action='store_true', default=False, help="do not check pileup depth in mutation regions")
-    parser.add_argument('--aligner', default='backtrack', help='supported aligners: ' + ','.join(sorted(SUPPORTED_ALIGNERS)))
+    parser.add_argument('--aligner', default='backtrack', help='supported aligners: ' + ','.join(aligners.supported_aligners_bam))
     parser.add_argument('--alignerthreads', default=1, help='threads used per realignment (default = 1)')
     parser.add_argument('--alignopts', default=None, help='aligner-specific options as comma delimited list of option1:value1,option2:value2,...')
     parser.add_argument('--tmpdir', default='addsnv.tmp', help='temporary directory (default=addsnv.tmp)')
     parser.add_argument('--seed', default=None, help='seed random number generation')
-    parser.add_argument('--vcf', default='', help="Path for the output VCF file. If not provided, the file will be saved in the current directory.")
     args = parser.parse_args()
 
     if 'BAMSURGEON_PICARD_JAR' in os.environ:
         args.picardjar = os.environ['BAMSURGEON_PICARD_JAR']
 
-    submain(args)
+    main(args)
 
 if __name__ == '__main__':
-    main()
+    run()

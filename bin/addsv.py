@@ -12,7 +12,7 @@ import pysam
 import bamsurgeon.replace_reads as rr
 import bamsurgeon.asmregion as ar
 import bamsurgeon.mutableseq as ms
-from bamsurgeon.aligners import remap_fastq, SUPPORTED_ALIGNERS
+import bamsurgeon.aligners as aligners
 import bamsurgeon.makevcf as makevcf
 
 from bamsurgeon.common import *
@@ -27,8 +27,9 @@ logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-def get_reads(bam_file, fasta_ref, chrom, start, end, svfrac):
-    bam = pysam.AlignmentFile(bam_file, reference_filename=fasta_ref)
+
+def get_reads(bam_file, chrom, start, end, svfrac):
+    bam = pysam.AlignmentFile(bam_file)
     for read in bam.fetch(chrom, start, end):
         read_end = read.reference_start + read.query_length
         pair_end = read.next_reference_start + read.query_length
@@ -54,7 +55,7 @@ def runwgsim(contig, newseq, pemean, pesd, tmpdir, nsimreads, mutid='null', err_
     fq2 = basefn + ".2.fq"
 
     fout = open(fasta,'w')
-    fout.write(">" + mutid + "\n" + newseq + "\n")
+    fout.write(">target\n" + newseq + "\n")
     fout.close()
 
     ctg_len = len(contig)
@@ -167,10 +168,10 @@ def align(qryseq, refseq):
     return best
 
 
-def discordant_fraction(bamfile, fasta_ref, chrom, start, end):
+def discordant_fraction(bamfile, chrom, start, end):
     r = 0
     d = 0
-    bam = pysam.AlignmentFile(bamfile, reference_filename=fasta_ref)
+    bam = pysam.AlignmentFile(bamfile)
     for read in bam.fetch(chrom, start, end):
         r += 1
         if not read.is_proper_pair:
@@ -230,7 +231,7 @@ def locate_contig_pos(refstart, refend, user_start, user_end, contig_len, maxlib
 
 
 def add_donor_reads(args, mutid, tmpbamfn, bdup_chrom, bdup_left_bnd, bdup_right_bnd, bdup_svfrac):
-    tmpbam = pysam.AlignmentFile(tmpbamfn, reference_filename=args.refFasta)
+    tmpbam = pysam.AlignmentFile(tmpbamfn)
 
     outbamfn = '%s/%s.%s.bigdup.merged.bam' % (args.tmpdir, mutid, str(uuid4()))
     outbam = pysam.AlignmentFile(outbamfn, 'wb', template=tmpbam)
@@ -238,9 +239,9 @@ def add_donor_reads(args, mutid, tmpbamfn, bdup_chrom, bdup_left_bnd, bdup_right
         outbam.write(read)
 
     # Calculate donor norm factor
-    with pysam.AlignmentFile(args.donorbam, reference_filename=args.refFasta) as donorbam:
+    with pysam.AlignmentFile(args.donorbam) as donorbam:
         cover_donor = donorbam.count(contig=bdup_chrom, start=bdup_left_bnd, end=bdup_right_bnd) / float(bdup_right_bnd-bdup_left_bnd)
-    with pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta) as origbam:
+    with pysam.AlignmentFile(args.bamFileName) as origbam:
         cover_orig = origbam.count(contig=bdup_chrom, start=bdup_left_bnd, end=bdup_right_bnd) / float(bdup_right_bnd-bdup_left_bnd)
 
     donor_norm_factor = cover_orig * bdup_svfrac / cover_donor
@@ -253,7 +254,7 @@ def add_donor_reads(args, mutid, tmpbamfn, bdup_chrom, bdup_left_bnd, bdup_right
 
     nreads = 0
 
-    for read in get_reads(args.donorbam, args.refFasta, bdup_chrom, bdup_left_bnd, bdup_right_bnd, donor_norm_factor):
+    for read in get_reads(args.donorbam, bdup_chrom, bdup_left_bnd, bdup_right_bnd, donor_norm_factor):
         read.query_name = read.query_name + '_donor_' + mutid
         outbam.write(read)
         nreads += 1
@@ -270,7 +271,7 @@ def merge_multi_trn(args, alignopts, pair, chrom, start, end, vaf):
     mutid = os.path.basename(pair[0]).split('.')[0]
 
     outbamfn = '%s/%s.%s.merged.bam' % (args.tmpdir, mutid, str(uuid4()))
-    bams = [pysam.AlignmentFile(bam, reference_filename=args.refFasta) for bam in pair]
+    bams = [pysam.AlignmentFile(bam) for bam in pair]
     outbam = pysam.AlignmentFile(outbamfn, 'wb', template=bams[0])
 
     readbins = {} # randomly assorted reads into bam sources 0 and 1
@@ -281,7 +282,7 @@ def merge_multi_trn(args, alignopts, pair, chrom, start, end, vaf):
 
         bam.close()
 
-    bams = [pysam.AlignmentFile(bam, reference_filename=args.refFasta) for bam in pair]
+    bams = [pysam.AlignmentFile(bam) for bam in pair]
 
     for i, bam in enumerate(bams):
         for read in bam.fetch(until_eof=True):
@@ -304,7 +305,7 @@ def makemut(args, bedline, alignopts):
 
     mutid = '_'.join(map(str, bedline.split()[:4]))
 
-    bamfile = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta)
+    bamfile = pysam.AlignmentFile(args.bamFileName)
     reffile = pysam.Fastafile(args.refFasta)
     logfn = '_'.join(map(os.path.basename, bedline.split()[:4])) + ".log"
     logfile = open('addsv_logs_' + os.path.basename(args.outBamFile) + '/' + os.path.basename(args.outBamFile) + '_' + logfn, 'w')
@@ -407,7 +408,7 @@ def makemut(args, bedline, alignopts):
 
     #logger.info("%s note: interval size was too short, adjusted: %s:%d-%d" % (mutid, chrom, start, end))
 
-    dfrac = discordant_fraction(args.bamFileName, args.refFasta, chrom, start, end)
+    dfrac = discordant_fraction(args.bamFileName, chrom, start, end)
     logger.info("%s discordant fraction: %f" % (mutid, dfrac))
 
     if dfrac > args.maxdfrac:
@@ -759,16 +760,16 @@ def makemut(args, bedline, alignopts):
         buffer = int(float(args.ismean))
         region_1_start, region_1_end = (refstart + trnpoint_1 - buffer, refend) if trn_left_flip else (refstart, refstart + trnpoint_1 + buffer)
         region_2_start, region_2_end = (trn_refstart + trnpoint_2 - buffer, trn_refend) if not trn_right_flip else (trn_refstart, trn_refstart + trnpoint_2 + buffer)
-        region_1_reads = get_reads(args.bamFileName, args.refFasta, chrom, region_1_start, region_1_end, float(svfrac))
-        region_2_reads = get_reads(args.bamFileName, args.refFasta, trn_chrom, region_2_start, region_2_end, float(svfrac))
+        region_1_reads = get_reads(args.bamFileName, chrom, region_1_start, region_1_end, float(svfrac))
+        region_2_reads = get_reads(args.bamFileName, trn_chrom, region_2_start, region_2_end, float(svfrac))
         excl_reads_names = set([read.query_name for read in region_1_reads] + [read.query_name for read in region_2_reads]) 
         nsimreads = len(excl_reads_names)
         # add additional excluded reads if bigdel(s) present
         if action == 'BIGDEL':
-            bigdel_region_reads = get_reads(args.bamFileName, args.refFasta, chrom, region_1_start, region_2_end, float(svfrac))
+            bigdel_region_reads = get_reads(args.bamFileName, chrom, region_1_start, region_2_end, float(svfrac))
             excl_reads_names = set([read.query_name for read in bigdel_region_reads])
     else:
-        region_reads = get_reads(args.bamFileName, args.refFasta, chrom, refstart, refend, float(svfrac))
+        region_reads = get_reads(args.bamFileName, chrom, refstart, refend, float(svfrac))
         excl_reads_names = set([read.query_name for read in region_reads])
         reads_ratio = len(mutseq.seq) / len(maxcontig.seq)
         nsimreads = int(len(excl_reads_names) * reads_ratio)
@@ -780,9 +781,9 @@ def makemut(args, bedline, alignopts):
     # simulate reads
     (fq1, fq2) = runwgsim(maxcontig, mutseq.seq, pemean, pesd, args.tmpdir, nsimreads, err_rate=float(args.simerr), mutid=mutid, seed=args.seed, trn_contig=trn_maxcontig, rename=rename_reads)
 
-    remap_fastq(args.aligner, fq1, args.refFasta, outbam_mutsfile, alignopts, fq2=fq2, mutid=mutid, threads=int(args.alignerthreads))
+    outreads = aligners.remap_fastq(args.aligner, fq1, fq2, args.refFasta, outbam_mutsfile, alignopts, mutid=mutid, threads=int(args.alignerthreads))
 
-    if not check_min_read_count(outbam_mutsfile, args.refFasta, 0):
+    if outreads == 0:
         logger.warning("%s outbam %s has no mapped reads!" % (mutid, outbam_mutsfile))
         # Remove content from logfile in order to skip this mutation in the final VCF file
         logfile.seek(0)
@@ -806,7 +807,7 @@ def makemut(args, bedline, alignopts):
 
 
 
-def submain(args):
+def main(args):
     logger.info("starting %s called with args: %s" % (sys.argv[0], ' '.join(sys.argv)))
     tmpbams = [] # temporary BAMs, each holds the realigned reads for one mutation
     exclfns = [] # 'exclude' files store reads to be removed from the original BAM due to deletions
@@ -819,6 +820,8 @@ def submain(args):
     alignopts = {}
     if args.alignopts is not None:
         alignopts = dict([o.split(':') for o in args.alignopts.split(',')])
+
+    aligners.checkoptions(args.aligner, alignopts, None, sv=True)
 
     # load insertion library if present
     try:
@@ -959,7 +962,7 @@ def submain(args):
         tmpbam, exclfn, mutinfo = result.result()
 
         if None not in (tmpbam, exclfn) and os.path.exists(tmpbam) and os.path.exists(exclfn):
-            if check_min_read_count(tmpbam, args.refFasta, 0):
+            if bamreadcount(tmpbam) > 0:
                 tmpbams.append(tmpbam)
                 exclfns.append(exclfn)
             else:
@@ -1041,7 +1044,7 @@ def submain(args):
             logger.info("tagged reads.")
 
         logger.info("writing to %s" % args.outBamFile)
-        rr.replace_reads(args.bamFileName, mergedtmp, args.outBamFile, args.refFasta, excludefile=excl_merged, allreads=True, keepsecondary=args.keepsecondary, seed=args.seed, quiet=True)
+        rr.replace_reads(args.bamFileName, mergedtmp, args.outBamFile, excludefile=excl_merged, allreads=True, keepsecondary=args.keepsecondary, seed=args.seed, quiet=True)
         if not args.debug:
             os.remove(excl_merged)
             os.remove(mergedtmp)
@@ -1058,13 +1061,14 @@ def submain(args):
     var_basename = '.'.join(os.path.basename(args.varFileName).split('.')[:-1])
     bam_basename = '.'.join(os.path.basename(args.outBamFile).split('.')[:-1])
 
-    vcf_fn = args.vcf + bam_basename + '.addsv.' + var_basename + '.vcf'
+    vcf_fn = bam_basename + '.addsv.' + var_basename + '.vcf'
 
     makevcf.write_vcf_sv('addsv_logs_' + os.path.basename(args.outBamFile), args.refFasta, vcf_fn)
 
     logger.info('vcf output written to ' + vcf_fn)
 
-def main():
+    
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='adds SVs to reads, outputs modified reads as .bam along with mates')
     parser.add_argument('-v', '--varfile', dest='varFileName', required=True,
                         help='whitespace-delimited target regions for SV spike-in, see manual for syntax')
@@ -1107,7 +1111,7 @@ def main():
     parser.add_argument('--inslib', default=None,
                         help='FASTA file containing library of possible insertions, use INS RND instead of INS filename to pick one')
     parser.add_argument('--aligner', default='backtrack',
-                        help='supported aligners: ' + ','.join(sorted(SUPPORTED_ALIGNERS)))
+                        help='supported aligners: ' + ','.join(aligners.supported_aligners_fastq))
     parser.add_argument('--alignopts', default=None,
                         help='aligner-specific options as comma delimited list of option1:value1,option2:value2,...')
     parser.add_argument('--alignerthreads', default=1,
@@ -1126,10 +1130,6 @@ def main():
                         help='seed random number generation')
     parser.add_argument('--allowN', action='store_true', default=False,
                         help='allow N in contigs, replace with A and warn user (default: drop mutation)')
-    parser.add_argument('--vcf', default='', 
-                        help="Path for the output VCF file. If not provided, the file will be saved in the current directory.")
     args = parser.parse_args()
-    submain(args)
+    main(args)
 
-if __name__ == '__main__':
-    main()

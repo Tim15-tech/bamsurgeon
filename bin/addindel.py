@@ -4,9 +4,10 @@ import sys
 import pysam
 import argparse
 import random
+import subprocess
 import os
 import bamsurgeon.replace_reads as rr
-from bamsurgeon.aligners import remap_bam, SUPPORTED_ALIGNERS
+import bamsurgeon.aligners as aligners
 import bamsurgeon.mutation as mutation
 import bamsurgeon.makevcf as makevcf
 
@@ -40,8 +41,8 @@ def makemut(args, chrom, start, end, vaf, ins, avoid, alignopts):
         mutid += ':INS:' + ins
 
 
-    bamfile = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta)
-    bammate = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta) # use for mates to avoid iterator problems
+    bamfile = pysam.AlignmentFile(args.bamFileName)
+    bammate = pysam.AlignmentFile(args.bamFileName) # use for mates to avoid iterator problems
     reffile = pysam.Fastafile(args.refFasta)
     tmpbams = []
 
@@ -193,9 +194,9 @@ def makemut(args, chrom, start, end, vaf, ins, avoid, alignopts):
 
     if not hasSNP or args.force:
         outbam_muts.close()
-        remap_bam(args.aligner, tmpoutbamname, args.refFasta, alignopts, threads=int(args.alignerthreads), mutid=mutid, paired=(not args.single), picardjar=args.picardjar)
+        aligners.remap_bam(args.aligner, tmpoutbamname, args.refFasta, alignopts, threads=int(args.alignerthreads), mutid=mutid, paired=(not args.single), picardjar=args.picardjar, insane=args.insane)
 
-        outbam_muts = pysam.AlignmentFile(tmpoutbamname, reference_filename=args.refFasta)
+        outbam_muts = pysam.AlignmentFile(tmpoutbamname)
         coverwindow = 1
         avgincover = get_avg_coverage(bamfile, chrom,mutpos-coverwindow,mutpos+del_ln+coverwindow)
         avgoutcover = get_avg_coverage(outbam_muts, chrom,mutpos-coverwindow,mutpos+del_ln+coverwindow)
@@ -231,9 +232,10 @@ def makemut(args, chrom, start, end, vaf, ins, avoid, alignopts):
     return sorted(tmpbams)
 
 
-def submain(args):
+def main(args):
     logger.info("starting %s called with args: %s" % (sys.argv[0], ' '.join(sys.argv)))
     bedfile = open(args.varFileName, 'r')
+    reffile = pysam.Fastafile(args.refFasta)
 
     if (args.bamFileName.endswith('.bam') and not os.path.exists(args.bamFileName + '.bai')) or \
         (args.bamFileName.endswith('.cram') and not os.path.exists(args.bamFileName + '.crai')):
@@ -244,6 +246,8 @@ def submain(args):
     if args.alignopts is not None:
         alignopts = dict([o.split(':') for o in args.alignopts.split(',')])
 
+    aligners.checkoptions(args.aligner, alignopts, args.picardjar)
+
     # load readlist to avoid, if specified
     avoid = None
     if args.avoidreads is not None:
@@ -251,7 +255,7 @@ def submain(args):
 
     # make a temporary file to hold mutated reads
     outbam_mutsfile = "addindel." + str(uuid4()) + ".muts.bam"
-    bamfile = pysam.AlignmentFile(args.bamFileName, reference_filename=args.refFasta)
+    bamfile = pysam.AlignmentFile(args.bamFileName)
     outbam_muts = pysam.AlignmentFile(outbam_mutsfile, 'wb', template=bamfile)
     outbam_muts.close()
     bamfile.close()
@@ -326,12 +330,12 @@ def submain(args):
         if args.tagreads:
             from bamsurgeon.markreads import markreads
             tmp_tag_bam = 'tag.%s.bam' % str(uuid4())
-            markreads(outbam_mutsfile, args.refFasta, tmp_tag_bam)
+            markreads(outbam_mutsfile, tmp_tag_bam)
             move(tmp_tag_bam, outbam_mutsfile)
             logger.info("tagged reads.")
 
         logger.info("done making mutations, merging mutations into %s --> %s" % (args.bamFileName, args.outBamFile))
-        rr.replace_reads(args.bamFileName, outbam_mutsfile, args.outBamFile, args.refFasta, keepqual=True, seed=args.seed)
+        rr.replace_reads(args.bamFileName, outbam_mutsfile, args.outBamFile, keepqual=True, seed=args.seed)
 
         #cleanup
         os.remove(outbam_mutsfile)
@@ -339,13 +343,13 @@ def submain(args):
     var_basename = '.'.join(os.path.basename(args.varFileName).split('.')[:-1])
     bam_basename = '.'.join(os.path.basename(args.outBamFile).split('.')[:-1])
 
-    vcf_fn = args.vcf + bam_basename + '.addindel.' + var_basename + '.vcf'
+    vcf_fn = bam_basename + '.addindel.' + var_basename + '.vcf'
 
     makevcf.write_vcf_indel('addindel_logs_' + os.path.basename(args.outBamFile), args.refFasta, vcf_fn)
 
     logger.info('vcf output written to ' + vcf_fn)
     
-def main():
+def run():
     # run this script
     parser = argparse.ArgumentParser(description='adds INDELs to reads, outputs modified reads as .bam along with mates')
     parser.add_argument('-v', '--varfile', dest='varFileName', required=True, help='Target regions to try and add a SNV, as BED')
@@ -358,7 +362,7 @@ def main():
     parser.add_argument('-c', '--cnvfile', dest='cnvfile', default=None, help="tabix-indexed list of genome-wide absolute copy number values (e.g. 2 alleles = no change)")
     parser.add_argument('-d', '--coverdiff', dest='coverdiff', default=0.1, help="allow difference in input and output coverage (default=0.1)")
     parser.add_argument('-p', '--procs', dest='procs', default=1, help="split into multiple processes (default=1)")
-    parser.add_argument('--picardjar', required=True, help='path to picard.jar')
+    parser.add_argument('--picardjar', default=None, help='path to picard.jar')
     parser.add_argument('--mindepth', default=10, help='minimum read depth to make mutation (default = 10)')
     parser.add_argument('--maxdepth', default=2000, help='maximum read depth to make mutation (default = 2000)')
     parser.add_argument('--minmutreads', default=3, help='minimum number of mutated reads to output per site')
@@ -370,7 +374,7 @@ def main():
     parser.add_argument('--single', action='store_true', default=False, help="input BAM is simgle-ended (default is paired-end)")
     parser.add_argument('--maxopen', dest='maxopen', default=1000, help="maximum number of open files during merge (default 1000)")
     parser.add_argument('--requirepaired', action='store_true', default=False, help='skip mutations if unpaired reads are present')
-    parser.add_argument('--aligner', default='backtrack', help='supported aligners: ' + ','.join(sorted(SUPPORTED_ALIGNERS)))
+    parser.add_argument('--aligner', default='backtrack', help='supported aligners: ' + ','.join(aligners.supported_aligners_bam))
     parser.add_argument('--alignopts', default=None, help='aligner-specific options as comma delimited list of option1:value1,option2:value2,...')
     parser.add_argument('--alignerthreads', default=1, help='threads used per realignment (default = 1)')
     parser.add_argument('--tagreads', action='store_true', default=False, help='add BS tag to altered reads')
@@ -378,13 +382,12 @@ def main():
     parser.add_argument('--ignorepileup', action='store_true', default=False, help="do not check pileup depth in mutation regions")
     parser.add_argument('--tmpdir', default='addindel.tmp', help='temporary directory (default=addindel.tmp)')
     parser.add_argument('--seed', default=None, help='seed random number generation')
-    parser.add_argument('--vcf', default='', help="Path for the output VCF file. If not provided, the file will be saved in the current directory.")
     args = parser.parse_args()
 
     if 'BAMSURGEON_PICARD_JAR' in os.environ:
         args.picardjar = os.environ['BAMSURGEON_PICARD_JAR']
 
-    submain(args)
+    main(args)
 
 if __name__ == '__main__':
-    main()
+    run()

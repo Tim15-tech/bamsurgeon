@@ -4,8 +4,9 @@
 try to do ref-directed assembly for paired reads in a region of a .bam file
 """
 
-import pysam,argparse,subprocess,shutil,os,re
+import pysam,argparse,subprocess,sys,shutil,os,re
 import bamsurgeon.parseamos as parseamos
+import datetime
 
 from uuid import uuid4
 
@@ -159,44 +160,27 @@ class ReadPair:
 
 
 def asm(chrom, start, end, bamfilename, reffile, kmersize, tmpdir, mutid='null', debug=False):
-    bamfile  = pysam.AlignmentFile(bamfilename, reference_filename=reffile.filename)
+    bamfile  = pysam.AlignmentFile(bamfilename)
 
     readpairs = {}
     nreads = 0
     ndisc  = 0 # track discordant reads
     rquals = []
     mquals = []
-    pending_reads = {}
+    pending_reads = dict()
 
     # Performance: find as much reads as possible without using .mate()
     for read in bamfile.fetch(chrom, start, end):
         if read.mate_is_unmapped or read.is_unmapped or not read.is_paired:
             continue
-
-        if read.is_supplementary or read.is_secondary:
-            continue
-
         if not read.is_proper_pair:
             ndisc += 1
-
+        mate = pending_reads.pop(read.qname, None)
         nreads += 1
-
-        if read.qname in pending_reads:
-            mate = pending_reads.pop(read.qname)
-            if read.is_read1 and mate.is_read1:
-                pending_reads[read.qname] = read
-                continue
-
-            if read.is_read2 and mate.is_read2:
-                pending_reads[read.qname] = read
-                continue
-
-            readpairs[read.qname] = ReadPair(read, mate)
-
-        else:
+        if mate is None:
             pending_reads[read.qname] = read
             continue
-
+        readpairs[read.qname] = ReadPair(read, mate)
         if read.is_read1:
             if read.is_reverse:
                 rquals.append(read.qual[::-1])
@@ -215,8 +199,6 @@ def asm(chrom, start, end, bamfilename, reffile, kmersize, tmpdir, mutid='null',
     # Find the remaining reads using .mate()
     for read in pending_reads.values():
         mate = bamfile.mate(read)
-        readpairs[read.qname] = ReadPair(read, mate)
-
         if read.is_read1:
             if read.is_reverse:
                 rquals.append(read.qual[::-1])
@@ -233,11 +215,10 @@ def asm(chrom, start, end, bamfilename, reffile, kmersize, tmpdir, mutid='null',
                 mquals.append(read.qual)
     bamfile.close()
 
-    if nreads == 0:
-        logger.info("found " + str(nreads) + " reads in region.")
-        return []
-    
     logger.info("found " + str(nreads) + " reads in region, " + str(float(ndisc)/float(nreads)) + " discordant.")
+
+    if nreads == 0:
+        return []
 
     refseq = None
     if reffile:
